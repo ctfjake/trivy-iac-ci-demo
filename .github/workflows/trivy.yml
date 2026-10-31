@@ -117,7 +117,11 @@ jobs:
           # The pattern matches the real directive form #trivy:ignore:<ID> and
           # deliberately not prose mentions of the word, nor this grep line
           # itself (the character after the colon here is "[", not A-Z).
-          inline="$(grep -rnIE '#trivy:ignore:[A-Z]' . --exclude-dir=.git || true)"
+          # Markdown docs are excluded: a directive printed in a README example
+          # is documentation, not a live waiver, so listing it as an active
+          # suppression would be misleading. Every infrastructure file is still
+          # scanned, and .trivyignore files are inventoried separately below.
+          inline="$(grep -rnIE '#trivy:ignore:[A-Z]' . --exclude-dir=.git --exclude='*.md' || true)"
           if [ -n "$inline" ]; then
             {
               echo "| File | Line | Check id | Reason / expiry |"
@@ -177,7 +181,7 @@ jobs:
             # Added inline directives (in any file) plus added entries in any
             # .trivyignore* file. Scoped so the output is real new waivers, not
             # prose or this workflow's own grep patterns.
-            added_inline="$(git diff "origin/${base}...HEAD" 2>/dev/null \
+            added_inline="$(git diff "origin/${base}...HEAD" -- . ':(exclude)*.md' 2>/dev/null \
               | grep -E '^\+' | grep -vE '^\+\+\+' \
               | grep -E '#trivy:ignore:[A-Z]' \
               | sed 's/^+//' || true)"
