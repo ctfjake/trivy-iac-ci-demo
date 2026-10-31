@@ -1,0 +1,14 @@
+# Example Trivy ignore file. This is NOT wired into the workflow on purpose,
+# so the demo gate keeps failing. Copy it to .trivyignore and point the
+# workflow's commented `trivyignores:` input at it to use it for real.
+#
+# Each line is a check ID you are choosing to accept as a documented,
+# time-boxed risk. Always leave a comment saying why and when it expires.
+
+# Accept unrestricted egress on the demo security group until we scope it.
+# Owner: platform-security. Review by: 2026-12-31.
+# AVD-AWS-0104
+
+# Accept the public RDS instance in the throwaway sandbox account only.
+# Owner: data-platform. Review by: 2026-12-31.
+# AVD-AWS-0180

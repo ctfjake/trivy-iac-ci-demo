@@ -1,0 +1,56 @@
+name: trivy-iac-scan
+
+# Trivy scans Terraform for misconfigurations on every push and pull request.
+# The "insecure" job is expected to FAIL (that is the whole demo): Trivy finds
+# high and critical misconfigurations and exits non-zero, so the run goes red
+# and bad infrastructure cannot merge. The "secure" job scans the fixed version
+# and PASSES, so the paved road stays green.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan-insecure:
+    name: Scan insecure/ (expected to FAIL)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Trivy config scan on insecure/
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: ./insecure
+          hide-progress: false
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          # .trivyignore example (commented): to accept a specific finding as a
+          # documented, time-boxed risk, uncomment and point at a .trivyignore
+          # file listing check IDs. We leave the core gate failing on purpose.
+          # trivyignores: .trivyignore
+
+  scan-secure:
+    name: Scan secure/ (expected to PASS)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Trivy config scan on secure/
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: ./secure
+          hide-progress: false
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '1'
