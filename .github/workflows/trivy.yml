@@ -4,7 +4,11 @@ name: trivy-iac-scan
 # The "insecure" job is expected to FAIL (that is the whole demo): Trivy finds
 # high and critical misconfigurations and exits non-zero, so the run goes red
 # and bad infrastructure cannot merge. The "secure" job scans the fixed version
-# and PASSES, so the paved road stays green.
+# and PASSES, so the paved road stays green. The "intended-public" job scans a
+# bucket that is public on purpose: its only findings are the public access
+# controls, each waived with a reasoned, time-boxed inline Trivy ignore, so it
+# PASSES too. The "ignore-inventory" job is informational: it lists every active
+# suppression in the run summary so no waiver is invisible.
 
 on:
   push:
@@ -54,3 +58,144 @@ jobs:
           format: table
           severity: HIGH,CRITICAL
           exit-code: '1'
+
+  scan-intended-public:
+    name: Scan intended-public/ (expected to PASS)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Trivy config scan on intended-public/
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: ./intended-public
+          hide-progress: false
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          # Pinned to the version this example was verified against. Trivy
+          # 0.70.0 has no --show-suppressed flag for `trivy config`, so there is
+          # no scan-log listing of what was ignored on this job; the
+          # ignore-inventory job below provides that visibility instead.
+          version: v0.70.0
+
+  ignore-inventory:
+    name: Ignore inventory (informational)
+    runs-on: ubuntu-24.04
+    # This job never fails on the presence of ignores. The accountability gate
+    # is CODEOWNERS review, not a hard block. The job just makes every active
+    # suppression visible in the run summary, and on a pull request it also
+    # lists the ignores this pull request newly adds.
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+        with:
+          # Full history so we can diff a pull request against its base ref.
+          fetch-depth: 0
+
+      - name: Inventory all Trivy ignores
+        shell: bash
+        run: |
+          set -uo pipefail
+          SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+
+          {
+            echo "## Trivy ignore inventory"
+            echo ""
+            echo "Every active suppression in this repository. Suppressions are"
+            echo "allowed, but each one is a documented, reviewed, time-boxed"
+            echo "risk. The accountability gate is CODEOWNERS review on the files"
+            echo "below, not a hard CI block."
+            echo ""
+            echo "### Inline \`#trivy:ignore\` comments"
+            echo ""
+          } >> "$SUMMARY"
+
+          # Grep the whole tree (excluding .git) for inline ignore directives.
+          # The pattern matches the real directive form #trivy:ignore:<ID> and
+          # deliberately not prose mentions of the word, nor this grep line
+          # itself (the character after the colon here is "[", not A-Z).
+          inline="$(grep -rnIE '#trivy:ignore:[A-Z]' . --exclude-dir=.git || true)"
+          if [ -n "$inline" ]; then
+            {
+              echo "| File | Line | Check id | Reason / expiry |"
+              echo "| --- | --- | --- | --- |"
+            } >> "$SUMMARY"
+            while IFS= read -r hit; do
+              [ -z "$hit" ] && continue
+              file="$(echo "$hit" | cut -d: -f1)"
+              line="$(echo "$hit" | cut -d: -f2)"
+              body="$(echo "$hit" | cut -d: -f3-)"
+              # Pull the check id (AVD-XXX-NNNN) and any exp: date out of the line.
+              checkid="$(echo "$body" | grep -oE 'AVD-[A-Z]+-[0-9]+' | head -1)"
+              exp="$(echo "$body" | grep -oE 'exp:[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)"
+              [ -z "$checkid" ] && checkid="(none)"
+              [ -z "$exp" ] && exp="(no expiry)"
+              echo "| ${file#./} | ${line} | ${checkid} | ${exp} |" >> "$SUMMARY"
+            done <<< "$inline"
+          else
+            echo "_No inline \`#trivy:ignore\` comments found._" >> "$SUMMARY"
+          fi
+
+          {
+            echo ""
+            echo "### \`.trivyignore\` file entries"
+            echo ""
+          } >> "$SUMMARY"
+
+          # List check-id entries in any .trivyignore* file. In this demo the
+          # IDs live as commented examples, so match AVD ids on any line.
+          ignorefiles="$(find . -path ./.git -prune -o -type f -name '.trivyignore*' -print || true)"
+          if [ -n "$ignorefiles" ]; then
+            {
+              echo "| File | Line | Check id / entry |"
+              echo "| --- | --- | --- |"
+            } >> "$SUMMARY"
+            while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              grep -nE 'AVD-[A-Z]+-[0-9]+' "$f" | while IFS= read -r e; do
+                ln="$(echo "$e" | cut -d: -f1)"
+                txt="$(echo "$e" | cut -d: -f2- | sed 's/^[[:space:]#]*//')"
+                echo "| ${f#./} | ${ln} | ${txt} |" >> "$SUMMARY"
+              done
+            done <<< "$ignorefiles"
+          else
+            echo "_No \`.trivyignore\` files found._" >> "$SUMMARY"
+          fi
+
+          # On a pull request, also surface the ignores this PR newly adds.
+          if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
+            base="${GITHUB_BASE_REF:-main}"
+            {
+              echo ""
+              echo "### New ignores in this PR (security review required)"
+              echo ""
+            } >> "$SUMMARY"
+            git fetch --no-tags --depth=1 origin "$base" 2>/dev/null || true
+            # Added inline directives (in any file) plus added entries in any
+            # .trivyignore* file. Scoped so the output is real new waivers, not
+            # prose or this workflow's own grep patterns.
+            added_inline="$(git diff "origin/${base}...HEAD" 2>/dev/null \
+              | grep -E '^\+' | grep -vE '^\+\+\+' \
+              | grep -E '#trivy:ignore:[A-Z]' \
+              | sed 's/^+//' || true)"
+            added_files="$(git diff "origin/${base}...HEAD" -- '.trivyignore*' '**/.trivyignore*' 2>/dev/null \
+              | grep -E '^\+' | grep -vE '^\+\+\+' \
+              | grep -E 'AVD-[A-Z]+-[0-9]+' \
+              | sed 's/^+//' || true)"
+            added="$(printf '%s\n%s' "$added_inline" "$added_files" | grep -vE '^[[:space:]]*$' || true)"
+            if [ -n "$added" ]; then
+              echo '```' >> "$SUMMARY"
+              echo "$added" >> "$SUMMARY"
+              echo '```' >> "$SUMMARY"
+              echo "" >> "$SUMMARY"
+              echo "A security reviewer should confirm each new suppression has a reason and an expiry." >> "$SUMMARY"
+            else
+              echo "_This pull request adds no new Trivy ignores._" >> "$SUMMARY"
+            fi
+          fi
+
+          # Informational only: always succeed.
+          exit 0

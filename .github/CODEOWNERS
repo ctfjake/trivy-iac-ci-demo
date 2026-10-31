@@ -1,0 +1,22 @@
+# CODEOWNERS for the Trivy ignore surface.
+#
+# Replace @ctfjake with your @org/security-team; this auto-requests their review
+# on any pull request that adds or changes a Trivy ignore (enforce with branch
+# protection requiring CODEOWNERS review).
+#
+# Every path below is a place a security finding can be suppressed: the
+# .trivyignore files that waive findings globally, and intended-public/ where
+# reasoned inline #trivy:ignore comments live. Owning these paths means a
+# security reviewer is pulled onto any pull request that touches a waiver.
+
+# Global and example Trivy ignore files at the repo root.
+/.trivyignore         @ctfjake
+/.trivyignore.*       @ctfjake
+.trivyignore.example  @ctfjake
+
+# Any .trivyignore file anywhere in the tree.
+**/.trivyignore       @ctfjake
+**/.trivyignore.*     @ctfjake
+
+# The intended-public example, where inline #trivy:ignore waivers live.
+/intended-public/     @ctfjake

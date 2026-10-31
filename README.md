@@ -70,7 +70,7 @@ intentional teaching examples. Do not deploy that directory.
 
 ## How to read the failing run
 
-Open the Actions tab and pick a run. You will see two jobs.
+Open the Actions tab and pick a run. You will see four jobs.
 
 - `Scan insecure/ (expected to FAIL)` ends red. Open it and read the Trivy step.
   You will see a table of findings, each with a check identifier (for example
@@ -78,6 +78,14 @@ Open the Actions tab and pick a run. You will see two jobs.
   table the step exits with code 1, which is what fails the job and the run.
 - `Scan secure/ (expected to PASS)` ends green. Same scanner, same settings, no
   high or critical findings, exit code 0.
+- `Scan intended-public/ (expected to PASS)` ends green too, but for a more
+  interesting reason: that bucket is public on purpose, so the public access
+  checks do fire, and each one is waived by a reasoned, time-boxed inline Trivy
+  ignore. The encryption check is not waived; it is fixed. See the "Exceptions
+  and accountability" section below.
+- `Ignore inventory (informational)` always ends green. It does not gate the
+  build. It reads the whole tree and writes a table of every active suppression
+  to the run summary, so no waiver is invisible.
 
 The red job is the whole point. That is the moment a bad change would have been
 stopped. The failure is not a broken workflow. It is the scanner doing its job and
@@ -93,6 +101,10 @@ trivy config --severity HIGH,CRITICAL --exit-code 1 ./insecure
 
 # Passes, because the infrastructure is on the paved road.
 trivy config --severity HIGH,CRITICAL --exit-code 1 ./secure
+
+# Passes, because the only findings are public access checks that are
+# waived with reasoned, time-boxed inline ignores, and encryption is fixed.
+trivy config --severity HIGH,CRITICAL --exit-code 1 ./intended-public
 ```
 
 ## Tuning the policy
@@ -113,3 +125,91 @@ Real teams tune these gates. Two common levers are in play here.
 to a released version tag so the behavior does not drift under us. It runs
 `scan-type: config` (the Infrastructure-as-Code scanner), prints a readable table,
 filters to `HIGH,CRITICAL`, and sets `exit-code: '1'` so findings fail the build.
+
+## Exceptions and accountability
+
+Sometimes a finding is not a mistake. A bucket is supposed to be public because it
+serves a static website. In that case you do not want to disable the scanner and you
+do not want to live with a permanently red build. You want to accept exactly that one
+finding, on the record, with a reason and an expiry, and you want someone on the
+security side to know it happened. The `intended-public/` directory is the worked
+example of that, and this section explains the four mechanisms that keep an exception
+honest.
+
+### The inline ignore syntax
+
+Trivy lets you waive a specific finding with a comment placed directly above the
+resource the finding fires on:
+
+```
+#trivy:ignore:AVD-AWS-0086 exp:2027-10-31
+resource "aws_s3_bucket" "site" {
+```
+
+Two details matter.
+
+First, the waiver is per resource. Trivy fires different checks on different
+resources. The public access block checks (`AVD-AWS-0086`, `AVD-AWS-0087`,
+`AVD-AWS-0091`, `AVD-AWS-0093`) fire on the `aws_s3_bucket` resource, while a public
+read access control list check (`AVD-AWS-0092`) fires on the separate
+`aws_s3_bucket_acl` resource. So an ignore comment only silences the checks that fire
+on the resource it sits above. A bucket that is public through both an ACL and the
+access block would need ignore comments above both resources.
+
+Second, every waiver carries a reason and an expiry. The `exp:` date is a forcing
+function: when it passes, Trivy stops honoring the ignore and the finding comes back,
+which pushes the exception back in front of a human instead of letting it rot forever.
+In `intended-public/main.tf` each of the four ignores names the specific control it
+waives, gives the reason (the bucket must serve objects to anonymous website
+visitors), and sets an expiry.
+
+### Ignoring public access does not waive encryption
+
+This is the part people get wrong. Waiving the public access checks silences only
+those checks. The encryption check (`AVD-AWS-0132`) keeps firing until you address it
+separately. That is a feature, not a gap: you accept only the risk you actually meant
+to accept. So the `intended-public/` bucket does not ignore the encryption finding, it
+fixes it, with a customer managed Key Management Service (KMS) key. It also keeps
+access logging and versioning on. The only thing public about that bucket is the one
+thing you asked for.
+
+### The four accountability mechanisms
+
+1. CODEOWNERS review gate. `.github/CODEOWNERS` assigns every place a finding can be
+   suppressed (the `.trivyignore` files and the `intended-public/` directory where
+   inline ignores live) to a security owner. On any pull request that touches those
+   paths, GitHub automatically requests that owner's review. Enforce it with branch
+   protection that requires CODEOWNERS review, and a waiver cannot merge without a
+   security sign off. The owner in this demo is a placeholder you replace with your own
+   `@org/security-team`.
+
+2. The ignore-inventory continuous integration step. The `ignore-inventory` job reads
+   the whole tree on every run and writes a table of every active suppression (file,
+   line, check identifier, reason or expiry) to the run summary. On a pull request it
+   also diffs against the base branch and lists the ignores this pull request newly
+   adds, under a heading that calls for security review. It is informational and never
+   fails the build, because the gate is the CODEOWNERS review, not a hard block. Its
+   value is that no suppression is ever invisible.
+
+3. Trivy suppressed-findings listing. Some Trivy scanners accept a flag to print what
+   was suppressed, so the scan log itself shows the waived findings. The installed
+   Trivy version 0.70.0 has no such flag for `trivy config` (there is no
+   `--show-suppressed` on that subcommand), so this demo does not wire it. If a future
+   version adds it, pass it on the scan jobs and the suppressed findings appear in the
+   scan log alongside the inventory. Until then the ignore-inventory job is the
+   listing.
+
+4. Expiry as a forcing function. The `exp:` date on each inline ignore means a waiver
+   is temporary by construction. When it lapses the finding returns and fails the gate,
+   so a stale exception cannot quietly outlive its reason. Renewing it is a new pull
+   request, which pulls the security owner back in through mechanism one.
+
+### Live notification as an extension
+
+This demo stops at making waivers visible in the run and gating them on review. A
+production setup often wants an active notification too: post to a Slack channel or a
+generic webhook, or open a tracking issue, whenever a pull request adds a new ignore.
+That needs a secret (a Slack token or webhook Uniform Resource Locator, or a token
+with issue write access), so it is deliberately not wired here. The ignore-inventory
+job already computes the newly added ignores, so adding a step that posts them to a
+webhook is the natural extension point once you supply the secret.
